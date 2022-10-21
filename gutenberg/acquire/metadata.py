@@ -172,32 +172,6 @@ class MetadataCache(metaclass=abc.ABCMeta):
                             yield fact
 
 
-class SleepycatMetadataCache(MetadataCache):
-    """Default cache manager implementation, based on Sleepycat/Berkeley DB.
-    Sleepycat is natively supported by RDFlib so this cache is reasonably fast.
-
-    """
-    def __init__(self, cache_location):
-        self._check_can_be_instantiated()
-        cache_uri = cache_location
-        store = 'Sleepycat'
-        MetadataCache.__init__(self, store, cache_uri)
-
-    def _populate_setup(self):
-        makedirs(self.cache_uri)
-        self.graph.open(self.cache_uri, create=True)
-
-    @classmethod
-    def _check_can_be_instantiated(cls):
-        try:
-            from bsddb3 import db
-        except ImportError:
-            db = None
-        if db is None:
-            raise InvalidCacheException('no install of bsddb3 found')
-        del db
-
-
 class FusekiMetadataCache(MetadataCache):
     _CACHE_URL_PREFIXES = ('http://', 'https://')
 
