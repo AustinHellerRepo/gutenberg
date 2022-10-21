@@ -7,7 +7,7 @@ from setuptools import setup
 
 
 install_requires = [
-    'bsddb3>=6.1.0',
+    'psycopg2>=2.9.4',
     'future>=0.15.2',
     'rdflib>=4.2.0,<5.0.0',
     'requests>=2.5.1',
