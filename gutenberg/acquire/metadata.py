@@ -179,26 +179,45 @@ class MetadataCache(metaclass=abc.ABCMeta):
 
 class PostgresTripleCollection:
 
-    def __init__(self, connection: psycopg2.extensions.connection):
-        self.__connection = connection
+    def __init__(self, connection_string: str):
+        self.__connection_string = connection_string
+        self.__populate_connection = psycopg2.connect(self.__connection_string)
 
     def __getitem__(self, item):
-        if isinstance(item, slice):
-            s, p, o = item.start, item.stop, item.step
-            conditions = {}  # type: Dict[str, str]
-            if s is not None:
-                conditions["subject"] = s
-            if p is not None:
-                conditions["predicate"] = p
-            if o is not None:
-                conditions["object"] = o
-            # TODO execute query based on provided conditions
-            raise NotImplementedError()
-        else:
-            raise TypeError("Expected 3-part slice")
+        connection = psycopg2.connect(self.__connection_string)
+        try:
+            if isinstance(item, slice):
+                s, p, o = item.start, item.stop, item.step
+                # TODO optimize by using stored procedures per combination
+                conditions = {}  # type: Dict[str, str]
+                if s is not None:
+                    conditions["subject"] = s
+                if p is not None:
+                    conditions["predicate"] = p
+                if o is not None:
+                    conditions["object"] = o
+                with connection.cursor("fetch") as cursor:
+                    cursor.itersize = 10000
+                    query_parameters = (conditions.get("subject", None), conditions.get("predicate", None), conditions.get("object", None))
+                    cursor.execute("SELECT subject, predicate, object FROM gutenberg.cache WHERE COALESCE(%s, subject) = subject AND COALESCE(%s, predicate) = predicate AND COALESCE(%s, object) = object;", query_parameters)
+                    rows = cursor.fetchall()
+                    for row in rows:
+                        yield row
+            else:
+                raise TypeError("Expected 3-part slice")
+        finally:
+            connection.close()
+
+    def add_fact(self, fact):
+        subject, predicate, object = fact
+        with self.__populate_connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO gutenberg.cache (subject, predicate, object) VALUES (%s, %s, %s)",
+                (subject, predicate, object)
+            )
 
     def close(self):
-        self.__connection.close()
+        self.__populate_connection.close()
 
 
 class PostgresMetadataCache(MetadataCache):
@@ -222,28 +241,51 @@ class PostgresMetadataCache(MetadataCache):
             cursor.execute("SELECT COUNT(table_name) FROM information_schema.tables WHERE table_type = 'BASE TABLE' AND table_schema = 'gutenberg';")
             tables_in_schema_total = cursor.fetchone()[0]
             return tables_in_schema_total != 0
-        raise NotImplementedError()
 
     def open(self):
-        # TODO set database to initialized state if in pre-initialized state
-        pass
+        if self.__connection is not None:
+            self.__connection.close()
+            raise Exception("Already open")
+        self.__connection = psycopg2.connect(self.__connection_string)
 
     def close(self):
-        pass
+        if self.__connection is None:
+            raise Exception("Already closed")
+        self.__connection.close()
+        self.__connection = None
 
     def delete(self):
+        with self.__connection.cursor() as cursor:
+            cursor.execute("DROP TABLE gutenberg.cache;")
+        self.close()
         # TODO clear out the database to pre-initialized state
         raise NotImplementedError()
 
     # NOTE: populate does not need to be overridden
 
     def _add_to_graph(self, fact):
-        # TODO insert fact into database
-        raise NotImplementedError()
+        self.__graph.add_fact(fact)
 
     def _populate_setup(self):
-        self.__graph = PostgresTripleCollection(psycopg2.connect(self.__connection_string))
-        #self.__connection = psycopg2.connect(self.__connection_string)
+        connection = psycopg2.connect(self.__connection_string)
+        try:
+            # TODO create necessary stored procedures
+            with connection.cursor() as cursor:
+                #cursor.mogrify("CREATE SCHEMA %s AUTHORIZATION %s;", (psycopg2.extensions.AsIs("u1"), psycopg2.extensions.AsIs("u1; SELECT * FROM user_table")))
+                cursor.execute("CREATE SCHEMA IF NOT EXISTS gutenberg;")
+                cursor.execute("CREATE TABLE gutenberg.cache (subject TEXT, predicate TEXT, object TEXT);")
+                cursor.execute("CREATE INDEX IX_subject ON gutenberg.cache (subject) INCLUDE (predicate, object);")
+                cursor.execute("CREATE INDEX IX_predicate ON gutenberg.cache (predicate) INCLUDE (subject, object);")
+                cursor.execute("CREATE INDEX IX_object ON gutenberg.cache (object) INCLUDE (subject, predicate);")
+                cursor.execute("CREATE INDEX IX_subject_predicate ON gutenberg.cache (subject, predicate) INCLUDE (object);")
+                cursor.execute("CREATE INDEX IX_subject_object ON gutenberg.cache (subject, object) INCLUDE (predicate);")
+                cursor.execute("CREATE INDEX IX_predicate_object ON gutenberg.cache (predicate, object) INCLUDE (subject);")
+                print("created gutenberg.cache and indexes")
+        finally:
+            connection.close()
+
+        # set the internal "graph" object to be used externally as if it was an RDF graph
+        self.__graph = PostgresTripleCollection(self.__connection_string)
 
     @property
     def _local_storage_path(self):
