@@ -31,6 +31,8 @@ from gutenberg._util.logging import disable_logging
 from gutenberg._util.os import makedirs
 from gutenberg._util.os import remove
 
+import psycopg2
+
 _GUTENBERG_CATALOG_URL = \
     r'http://www.gutenberg.org/cache/epub/feeds/rdf-files.tar.bz2'
 _DB_IDENTIFIER = 'urn:gutenberg:metadata'
@@ -170,6 +172,53 @@ class MetadataCache(metaclass=abc.ABCMeta):
                             logging.info('skipping invalid triple %s', fact)
                         else:
                             yield fact
+
+
+class PostgresMetadataCache(MetadataCache):
+
+    def __init__(self, name: str, connection_string: str = None):
+        store = 'Postgres'
+        MetadataCache.__init__(self, store, name)
+        self.__connection_string = connection_string or os.getenv('GUTENBERG_POSTGRES_CONNECTIONSTRING')
+        self.__connection = None  # type: psycopg2.connection
+
+    @property
+    def exists(self):
+        # TODO check if the database is in a pre-initialized state
+        raise NotImplementedError()
+
+    def open(self):
+        pass
+
+    def close(self):
+        pass
+
+    def delete(self):
+        # TODO clear out the database to pre-initialized state
+        raise NotImplementedError()
+
+    # NOTE: populate does not need to be overridden
+
+    def _add_to_graph(self, fact):
+        # TODO insert fact into database
+        raise NotImplementedError()
+
+    def _populate_setup(self):
+        self.__connection = psycopg2.connect(self.__connection_string)
+
+    @property
+    def _local_storage_path(self):
+        raise NotImplementedError("This exception should never be encountered unless the overridden functions are not actually being called.")
+
+    @staticmethod
+    def _add_namespaces(graph):
+        raise NotImplementedError("This exception should never be encountered unless the overridden functions are not actually being called.")
+
+    # NOTE: _download_metadata_archive does not need to be overridden
+
+    # NOTE: _metadata_is_invalid does not need to be overridden
+
+    # NOTE: _iter_metadata_triples does not need to be overridden
 
 
 class FusekiMetadataCache(MetadataCache):
@@ -318,14 +367,16 @@ def _create_metadata_cache(cache_location):
     """
     cache_url = os.getenv('GUTENBERG_FUSEKI_URL')
     if cache_url:
+        logging.info('Utilizing FusekiMetadataCache')
         return FusekiMetadataCache(cache_location, cache_url)
+    postgres_name = os.getenv('GUTENBERG_POSTGRES_NAME')
+    if postgres_name:
+        logging.info('Utilizing PostgresMetadataCache')
+        return PostgresMetadataCache(postgres_name)
 
-    try:
-        return SleepycatMetadataCache(cache_location)
-    except InvalidCacheException:
-        logging.warning('Unable to create cache based on BSD-DB. '
-                        'Falling back to SQLite backend. '
-                        'Performance may be degraded significantly.')
+    logging.warning('Unable to create cache based on FusekiMetadataCache or PostgresMetadataCache. '
+                    'Falling back to SQLite backend. '
+                    'Performance may be degraded significantly.')
 
     return SqliteMetadataCache(cache_location)
 
