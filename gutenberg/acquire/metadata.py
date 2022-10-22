@@ -13,6 +13,7 @@ import tempfile
 from contextlib import closing
 from contextlib import contextmanager
 from urllib.request import urlopen
+from typing import Dict
 
 from rdflib import plugin
 from rdflib.graph import Graph
@@ -32,6 +33,7 @@ from gutenberg._util.os import makedirs
 from gutenberg._util.os import remove
 
 import psycopg2
+import psycopg2.extensions
 
 _GUTENBERG_CATALOG_URL = \
     r'http://www.gutenberg.org/cache/epub/feeds/rdf-files.tar.bz2'
@@ -46,7 +48,8 @@ class MetadataCache(metaclass=abc.ABCMeta):
     def __init__(self, store, cache_uri):
         self.store = store
         self.cache_uri = cache_uri
-        self.graph = Graph(store=self.store, identifier=_DB_IDENTIFIER)
+        if store is not None:
+            self.graph = Graph(store=self.store, identifier=_DB_IDENTIFIER)
         self.is_open = False
         self.catalog_source = _GUTENBERG_CATALOG_URL
 
@@ -174,20 +177,55 @@ class MetadataCache(metaclass=abc.ABCMeta):
                             yield fact
 
 
+class PostgresTripleCollection:
+
+    def __init__(self, connection: psycopg2.extensions.connection):
+        self.__connection = connection
+
+    def __getitem__(self, item):
+        if isinstance(item, slice):
+            s, p, o = item.start, item.stop, item.step
+            conditions = {}  # type: Dict[str, str]
+            if s is not None:
+                conditions["subject"] = s
+            if p is not None:
+                conditions["predicate"] = p
+            if o is not None:
+                conditions["object"] = o
+            # TODO execute query based on provided conditions
+            raise NotImplementedError()
+        else:
+            raise TypeError("Expected 3-part slice")
+
+    def close(self):
+        self.__connection.close()
+
+
 class PostgresMetadataCache(MetadataCache):
 
     def __init__(self, name: str, connection_string: str = None):
         store = 'Postgres'
-        MetadataCache.__init__(self, store, name)
+        MetadataCache.__init__(self, None, name)
         self.__connection_string = connection_string or os.getenv('GUTENBERG_POSTGRES_CONNECTIONSTRING')
         self.__connection = None  # type: psycopg2.connection
+        self.__graph = None
+
+    @property
+    def graph(self):
+        return self.__graph
 
     @property
     def exists(self):
         # TODO check if the database is in a pre-initialized state
+        connection = psycopg2.connect(self.__connection_string)
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(table_name) FROM information_schema.tables WHERE table_type = 'BASE TABLE' AND table_schema = 'gutenberg';")
+            tables_in_schema_total = cursor.fetchone()[0]
+            return tables_in_schema_total != 0
         raise NotImplementedError()
 
     def open(self):
+        # TODO set database to initialized state if in pre-initialized state
         pass
 
     def close(self):
@@ -204,7 +242,8 @@ class PostgresMetadataCache(MetadataCache):
         raise NotImplementedError()
 
     def _populate_setup(self):
-        self.__connection = psycopg2.connect(self.__connection_string)
+        self.__graph = PostgresTripleCollection(psycopg2.connect(self.__connection_string))
+        #self.__connection = psycopg2.connect(self.__connection_string)
 
     @property
     def _local_storage_path(self):

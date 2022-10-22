@@ -1,0 +1,1 @@
+docker run --name gutenberg_postgres --rm -p 5434:5432 -e POSTGRES_DB=gutenberg_db -e POSTGRES_USER=gutenberg_user -e POSTGRES_PASSWORD=gutenberg_password -d postgres

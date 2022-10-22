@@ -11,7 +11,7 @@ from urllib.request import pathname2url
 from gutenberg.acquire.metadata import CacheAlreadyExistsException
 from gutenberg.acquire.metadata import InvalidCacheException
 from gutenberg.acquire.metadata import FusekiMetadataCache
-from gutenberg.acquire.metadata import SleepycatMetadataCache
+from gutenberg.acquire.metadata import PostgresMetadataCache
 from gutenberg.acquire.metadata import SqliteMetadataCache
 from gutenberg.acquire.metadata import set_metadata_cache
 from gutenberg.query import get_metadata
@@ -29,7 +29,7 @@ class MetadataCache:
 
     def test_initialize(self):
         # Simply creating the cache shouldn't create on-disk structures
-        self.assertFalse(os.path.exists(self.local_storage))
+        self.assertFalse(self.exists)
 
     def test_populate(self):
         self.cache.populate()
@@ -64,11 +64,11 @@ class MetadataCache:
             pass
 
     def test_delete(self):
-        self.assertFalse(os.path.exists(self.local_storage))
+        self.assertFalse(self.exists)
         self.cache.populate()
-        self.assertTrue(os.path.exists(self.local_storage))
+        self.assertTrue(self.exists)
         self.cache.delete()
-        self.assertFalse(os.path.exists(self.local_storage))
+        self.assertFalse(self.exists)
 
     def test_read_deleted_cache(self):
         self.cache.populate()
@@ -96,19 +96,33 @@ class TestFuseki(MetadataCache, unittest.TestCase):
         self.cache = FusekiMetadataCache(self.local_storage, cache_url)
         self.cache.catalog_source = _sample_metadata_catalog_source()
 
+    @property
+    def exists(self):
+        return self.cache.exists
 
-class TestSleepycat(MetadataCache, unittest.TestCase):
+
+class TestPostgresMetadataCache(MetadataCache, unittest.TestCase):
     def setUp(self):
-        self.local_storage = tempfile.mktemp()
-        self.cache = SleepycatMetadataCache(self.local_storage)
+        self.connection_string = "postgresql://gutenberg_user:gutenberg_password@localhost:5434/gutenberg_db"
+        self.cache = PostgresMetadataCache(TestPostgresMetadataCache.__name__, self.connection_string)
         self.cache.catalog_source = _sample_metadata_catalog_source()
+
+    @property
+    def exists(self):
+        return self.cache.exists
 
 
 class TestSqlite(MetadataCache, unittest.TestCase):
     def setUp(self):
+        raise unittest.SkipTest('TODO remove SkipTest exception in %s class %s function' % (TestSqlite.__name__, TestSqlite.setUp.__name__))
+
         self.local_storage = "%s.sqlite" % tempfile.mktemp()
         self.cache = SqliteMetadataCache(self.local_storage)
         self.cache.catalog_source = _sample_metadata_catalog_source()
+
+    @property
+    def exists(self):
+        return self.cache.exists
 
     def test_add_does_not_swallow_exceptions(self):
         original_add = self.cache.graph.add

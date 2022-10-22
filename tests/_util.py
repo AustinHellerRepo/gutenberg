@@ -11,7 +11,7 @@ import tempfile
 from contextlib import closing
 from contextlib import contextmanager
 
-from gutenberg.acquire.metadata import SleepycatMetadataCache
+from gutenberg.acquire.metadata import PostgresMetadataCache
 from gutenberg.acquire.metadata import set_metadata_cache
 import gutenberg.acquire.text
 
@@ -36,7 +36,7 @@ class MockMetadataMixin(metaclass=abc.ABCMeta):
         raise NotImplementedError  # pragma: no cover
 
     def setUp(self):
-        self.cache = _SleepycatMetadataCacheForTesting(self.sample_data, 'nt')
+        self.cache = _PostgresMetadataCacheForTesting(self.sample_data, 'nt')
         self.cache.populate()
         set_metadata_cache(self.cache)
 
@@ -45,14 +45,14 @@ class MockMetadataMixin(metaclass=abc.ABCMeta):
         self.cache.delete()
 
 
-class _SleepycatMetadataCacheForTesting(SleepycatMetadataCache):
+class _PostgresMetadataCacheForTesting(PostgresMetadataCache):
     def __init__(self, sample_data_factory, data_format):
-        SleepycatMetadataCache.__init__(self, tempfile.mktemp())
+        PostgresMetadataCache.__init__(self, _PostgresMetadataCacheForTesting.__name__, "postgresql://gutenberg_user:gutenberg_password@localhost:5434/gutenberg_db")
         self.sample_data_factory = sample_data_factory
         self.data_format = data_format
 
     def populate(self):
-        SleepycatMetadataCache.populate(self)
+        PostgresMetadataCache.populate(self)
 
         data = '\n'.join(item.rdf() for item in self.sample_data_factory())
 
