@@ -321,13 +321,7 @@ class PostgresMetadataCache(MetadataCache):
             with connection.cursor() as cursor:
                 cursor.execute("CREATE SCHEMA IF NOT EXISTS gutenberg;")
                 cursor.execute("CREATE TABLE gutenberg.cache (subject TEXT, predicate TEXT, object TEXT, subject_hash BIGINT, predicate_hash BIGINT, object_hash BIGINT);")
-                cursor.execute("CREATE INDEX IX_subject ON gutenberg.cache (subject_hash) INCLUDE (subject, predicate, object);")
-                cursor.execute("CREATE INDEX IX_predicate ON gutenberg.cache (predicate_hash) INCLUDE (subject, predicate, object);")
-                cursor.execute("CREATE INDEX IX_object ON gutenberg.cache (object_hash) INCLUDE (subject, predicate, object);")
-                cursor.execute("CREATE INDEX IX_subject_predicate ON gutenberg.cache (subject_hash, predicate_hash) INCLUDE (subject, predicate, object);")
-                cursor.execute("CREATE INDEX IX_subject_object ON gutenberg.cache (subject_hash, object_hash) INCLUDE (subject, predicate, object);")
-                cursor.execute("CREATE INDEX IX_predicate_object ON gutenberg.cache (predicate_hash, object_hash) INCLUDE (subject, predicate, object);")
-                cursor.execute("CREATE INDEX IX_subject_predicate_object ON gutenberg.cache (subject_hash, predicate_hash, object_hash) INCLUDE (subject, predicate, object);")
+                cursor.execute("CREATE INDEX IX_subject_predicate_object ON gutenberg.cache (subject_hash, predicate_hash, object_hash);")
                 connection.commit()
         finally:
             connection.close()
