@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from urllib.request import pathname2url
+import psycopg2
 
 from gutenberg.acquire.metadata import CacheAlreadyExistsException
 from gutenberg.acquire.metadata import InvalidCacheException
@@ -104,6 +105,14 @@ class TestFuseki(MetadataCache, unittest.TestCase):
 class TestPostgresMetadataCache(MetadataCache, unittest.TestCase):
     def setUp(self):
         self.connection_string = "postgresql://gutenberg_user:gutenberg_password@localhost:5434/gutenberg_db"
+
+        # remove database structures if they happen to exist from previous runs failing
+        connection = psycopg2.connect(self.connection_string)
+        with connection.cursor() as cursor:
+            cursor.execute("DROP TABLE IF EXISTS gutenberg.cache;")
+            cursor.execute("DROP SCHEMA IF EXISTS gutenberg;")
+            connection.commit()
+
         self.cache = PostgresMetadataCache(TestPostgresMetadataCache.__name__, self.connection_string)
         self.cache.catalog_source = _sample_metadata_catalog_source()
 

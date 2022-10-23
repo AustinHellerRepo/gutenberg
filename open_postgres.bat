@@ -1,0 +1,1 @@
+docker exec -it gutenberg_postgres psql -d gutenberg_db -U gutenberg_user

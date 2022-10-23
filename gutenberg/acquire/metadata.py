@@ -13,7 +13,7 @@ import tempfile
 from contextlib import closing
 from contextlib import contextmanager
 from urllib.request import urlopen
-from typing import Dict
+from typing import Dict, Tuple
 
 from rdflib import plugin
 from rdflib.graph import Graph
@@ -33,6 +33,7 @@ from gutenberg._util.os import makedirs
 from gutenberg._util.os import remove
 
 import psycopg2
+import psycopg2.errors
 import psycopg2.extensions
 
 _GUTENBERG_CATALOG_URL = \
@@ -177,6 +178,24 @@ class MetadataCache(metaclass=abc.ABCMeta):
                             yield fact
 
 
+class PostgresSingle:
+
+    def __init__(self, value: str):
+        self.__value = value
+
+    def toPython(self):
+        return self.__value
+
+
+class PostgresTuple:
+
+    def __init__(self, tuple: Tuple[str, str, str]):
+        self.__tuple = tuple
+
+    def toPython(self):
+        return self.__tuple
+
+
 class PostgresTripleCollection:
 
     def __init__(self, connection_string: str):
@@ -190,19 +209,32 @@ class PostgresTripleCollection:
                 s, p, o = item.start, item.stop, item.step
                 # TODO optimize by using stored procedures per combination
                 conditions = {}  # type: Dict[str, str]
+                columns = ["subject", "predicate", "object"]
                 if s is not None:
                     conditions["subject"] = s
+                    columns.remove("subject")
                 if p is not None:
                     conditions["predicate"] = p
+                    columns.remove("predicate")
                 if o is not None:
                     conditions["object"] = o
+                    columns.remove("object")
                 with connection.cursor("fetch") as cursor:
                     cursor.itersize = 10000
                     query_parameters = (conditions.get("subject", None), conditions.get("predicate", None), conditions.get("object", None))
-                    cursor.execute("SELECT subject, predicate, object FROM gutenberg.cache WHERE COALESCE(%s, subject) = subject AND COALESCE(%s, predicate) = predicate AND COALESCE(%s, object) = object;", query_parameters)
+                    try:
+                        cursor.execute("SELECT " + ",".join(columns) + " FROM gutenberg.cache WHERE COALESCE(%s, subject) = subject AND COALESCE(%s, predicate) = predicate AND COALESCE(%s, object) = object;", query_parameters)
+                    except psycopg2.errors.UndefinedTable as ex:
+                        if 'relation "gutenberg.cache" does not exist' in str(ex):
+                            raise InvalidCacheException()
+                        raise
                     rows = cursor.fetchall()
-                    for row in rows:
-                        yield row
+                    if len(columns) == 1:
+                        for row in rows:
+                            yield PostgresSingle(row[0])
+                    else:
+                        for row in rows:
+                            yield PostgresTuple(row)
             else:
                 raise TypeError("Expected 3-part slice")
         finally:
@@ -215,6 +247,7 @@ class PostgresTripleCollection:
                 "INSERT INTO gutenberg.cache (subject, predicate, object) VALUES (%s, %s, %s)",
                 (subject, predicate, object)
             )
+            self.__populate_connection.commit()
 
     def close(self):
         self.__populate_connection.close()
@@ -226,7 +259,6 @@ class PostgresMetadataCache(MetadataCache):
         store = 'Postgres'
         MetadataCache.__init__(self, None, name)
         self.__connection_string = connection_string or os.getenv('GUTENBERG_POSTGRES_CONNECTIONSTRING')
-        self.__connection = None  # type: psycopg2.connection
         self.__graph = None
 
     @property
@@ -235,31 +267,29 @@ class PostgresMetadataCache(MetadataCache):
 
     @property
     def exists(self):
-        # TODO check if the database is in a pre-initialized state
         connection = psycopg2.connect(self.__connection_string)
         with connection.cursor() as cursor:
             cursor.execute("SELECT COUNT(table_name) FROM information_schema.tables WHERE table_type = 'BASE TABLE' AND table_schema = 'gutenberg';")
+            connection.commit()
             tables_in_schema_total = cursor.fetchone()[0]
             return tables_in_schema_total != 0
 
     def open(self):
-        if self.__connection is not None:
-            self.__connection.close()
-            raise Exception("Already open")
-        self.__connection = psycopg2.connect(self.__connection_string)
+        if not self.exists:
+            raise InvalidCacheException()
 
     def close(self):
-        if self.__connection is None:
-            raise Exception("Already closed")
-        self.__connection.close()
-        self.__connection = None
+        pass
 
     def delete(self):
-        with self.__connection.cursor() as cursor:
-            cursor.execute("DROP TABLE gutenberg.cache;")
-        self.close()
-        # TODO clear out the database to pre-initialized state
-        raise NotImplementedError()
+        connection = psycopg2.connect(self.__connection_string)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("DROP TABLE gutenberg.cache;")
+                cursor.execute("DROP SCHEMA gutenberg;")
+                connection.commit()
+        finally:
+            connection.close()
 
     # NOTE: populate does not need to be overridden
 
@@ -271,7 +301,6 @@ class PostgresMetadataCache(MetadataCache):
         try:
             # TODO create necessary stored procedures
             with connection.cursor() as cursor:
-                #cursor.mogrify("CREATE SCHEMA %s AUTHORIZATION %s;", (psycopg2.extensions.AsIs("u1"), psycopg2.extensions.AsIs("u1; SELECT * FROM user_table")))
                 cursor.execute("CREATE SCHEMA IF NOT EXISTS gutenberg;")
                 cursor.execute("CREATE TABLE gutenberg.cache (subject TEXT, predicate TEXT, object TEXT);")
                 cursor.execute("CREATE INDEX IX_subject ON gutenberg.cache (subject) INCLUDE (predicate, object);")
@@ -280,7 +309,7 @@ class PostgresMetadataCache(MetadataCache):
                 cursor.execute("CREATE INDEX IX_subject_predicate ON gutenberg.cache (subject, predicate) INCLUDE (object);")
                 cursor.execute("CREATE INDEX IX_subject_object ON gutenberg.cache (subject, object) INCLUDE (predicate);")
                 cursor.execute("CREATE INDEX IX_predicate_object ON gutenberg.cache (predicate, object) INCLUDE (subject);")
-                print("created gutenberg.cache and indexes")
+                connection.commit()
         finally:
             connection.close()
 
