@@ -1,4 +1,14 @@
 *********
+Differences from `c-w/gutenberg <https://github.com/c-w/gutenberg>`_
+*********
+
+* Removed all references to BSD-DB
+    * This ensures that any naive usage of this framework is free for commercial use
+* Added implementation of PostgresMetadataCache
+    * Able to point my cache to a remote server conveniently
+    * **Statistics about usage coming soon**
+
+*********
 Gutenberg
 *********
 
