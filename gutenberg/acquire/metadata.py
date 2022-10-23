@@ -202,6 +202,19 @@ class PostgresTripleCollection:
         self.__connection_string = connection_string
         self.__populate_connection = psycopg2.connect(self.__connection_string)
 
+    @staticmethod
+    def __verify_row(row, conditions) -> bool:
+        if "subject" in conditions:
+            if row[0] != conditions["subject"]:
+                return False
+        if "predicate" in conditions:
+            if row[1] != conditions["predicate"]:
+                return False
+        if "object" in conditions:
+            if row[2] != conditions["object"]:
+                return False
+        return True
+
     def __getitem__(self, item):
         connection = psycopg2.connect(self.__connection_string)
         try:
@@ -209,32 +222,36 @@ class PostgresTripleCollection:
                 s, p, o = item.start, item.stop, item.step
                 # TODO optimize by using stored procedures per combination
                 conditions = {}  # type: Dict[str, str]
-                columns = ["subject", "predicate", "object"]
-                if s is not None:
-                    conditions["subject"] = s
-                    columns.remove("subject")
-                if p is not None:
-                    conditions["predicate"] = p
-                    columns.remove("predicate")
-                if o is not None:
-                    conditions["object"] = o
-                    columns.remove("object")
+                columns_detail_tuple_per_condition_name = {
+                    "subject": (0, s),
+                    "predicate": (1, p),
+                    "object": (2, o)
+                }
+                remaining_indexes = [0, 1, 2]
+                for condition_name, detail_tuple in columns_detail_tuple_per_condition_name.items():
+                    if detail_tuple[1] is not None:
+                        conditions[condition_name] = detail_tuple[1].toPython()
+                        remaining_indexes.remove(detail_tuple[0])
+
                 with connection.cursor("fetch") as cursor:
                     cursor.itersize = 10000
                     query_parameters = (conditions.get("subject", None), conditions.get("predicate", None), conditions.get("object", None))
                     try:
-                        cursor.execute("SELECT " + ",".join(columns) + " FROM gutenberg.cache WHERE COALESCE(%s, subject) = subject AND COALESCE(%s, predicate) = predicate AND COALESCE(%s, object) = object;", query_parameters)
+                        cursor.execute("SELECT subject, predicate, object FROM gutenberg.cache WHERE COALESCE(%s, subject) = subject AND COALESCE(%s, predicate) = predicate AND COALESCE(%s, object) = object;", query_parameters)
                     except psycopg2.errors.UndefinedTable as ex:
                         if 'relation "gutenberg.cache" does not exist' in str(ex):
                             raise InvalidCacheException()
                         raise
                     rows = cursor.fetchall()
-                    if len(columns) == 1:
+                    if len(conditions.keys()) == 2:
+                        column_index = remaining_indexes[0]
                         for row in rows:
-                            yield PostgresSingle(row[0])
+                            if PostgresTripleCollection.__verify_row(row, conditions):
+                                yield PostgresSingle(row[column_index])
                     else:
                         for row in rows:
-                            yield PostgresTuple(row)
+                            if PostgresTripleCollection.__verify_row(row, conditions):
+                                yield PostgresTuple(row)
             else:
                 raise TypeError("Expected 3-part slice")
         finally:
@@ -256,7 +273,6 @@ class PostgresTripleCollection:
 class PostgresMetadataCache(MetadataCache):
 
     def __init__(self, name: str, connection_string: str = None):
-        store = 'Postgres'
         MetadataCache.__init__(self, None, name)
         self.__connection_string = connection_string or os.getenv('GUTENBERG_POSTGRES_CONNECTIONSTRING')
         self.__graph = None
@@ -302,13 +318,14 @@ class PostgresMetadataCache(MetadataCache):
             # TODO create necessary stored procedures
             with connection.cursor() as cursor:
                 cursor.execute("CREATE SCHEMA IF NOT EXISTS gutenberg;")
-                cursor.execute("CREATE TABLE gutenberg.cache (subject TEXT, predicate TEXT, object TEXT);")
-                cursor.execute("CREATE INDEX IX_subject ON gutenberg.cache (subject) INCLUDE (predicate, object);")
-                cursor.execute("CREATE INDEX IX_predicate ON gutenberg.cache (predicate) INCLUDE (subject, object);")
-                cursor.execute("CREATE INDEX IX_object ON gutenberg.cache (object) INCLUDE (subject, predicate);")
-                cursor.execute("CREATE INDEX IX_subject_predicate ON gutenberg.cache (subject, predicate) INCLUDE (object);")
-                cursor.execute("CREATE INDEX IX_subject_object ON gutenberg.cache (subject, object) INCLUDE (predicate);")
-                cursor.execute("CREATE INDEX IX_predicate_object ON gutenberg.cache (predicate, object) INCLUDE (subject);")
+                cursor.execute("CREATE TABLE gutenberg.cache (subject TEXT, predicate TEXT, object TEXT, subject_hash INTEGER, predicate_hash INTEGER, object_hash INTEGER);")
+                cursor.execute("CREATE INDEX IX_subject ON gutenberg.cache (subject_hash) INCLUDE (subject, predicate, object);")
+                cursor.execute("CREATE INDEX IX_predicate ON gutenberg.cache (predicate_hash) INCLUDE (subject, predicate, object);")
+                cursor.execute("CREATE INDEX IX_object ON gutenberg.cache (object_hash) INCLUDE (subject, predicate, object);")
+                cursor.execute("CREATE INDEX IX_subject_predicate ON gutenberg.cache (subject_hash, predicate_hash) INCLUDE (subject, predicate, object);")
+                cursor.execute("CREATE INDEX IX_subject_object ON gutenberg.cache (subject_hash, object_hash) INCLUDE (subject, predicate, object);")
+                cursor.execute("CREATE INDEX IX_predicate_object ON gutenberg.cache (predicate_hash, object_hash) INCLUDE (subject, predicate, object);")
+                cursor.execute("CREATE INDEX IX_subject_predicate_object ON gutenberg.cache (subject_hash, predicate_hash, object_hash) INCLUDE (subject, predicate, object);")
                 connection.commit()
         finally:
             connection.close()

@@ -1,1 +1,1 @@
-docker run --name gutenberg_postgres --rm -p 5434:5432 -e POSTGRES_DB=gutenberg_db -e POSTGRES_USER=gutenberg_user -e POSTGRES_PASSWORD=gutenberg_password -d postgres
+docker run --name gutenberg_postgres -v /e/Projects_Unversioned/gutenberg_postgres/data:/var/lib/postgresql/data --rm -p 5434:5432 -e POSTGRES_DB=gutenberg_db -e POSTGRES_USER=gutenberg_user -e POSTGRES_PASSWORD=gutenberg_password -d postgres
