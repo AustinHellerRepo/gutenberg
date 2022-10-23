@@ -203,16 +203,11 @@ class PostgresTripleCollection:
         self.__populate_connection = psycopg2.connect(self.__connection_string)
 
     @staticmethod
-    def __verify_row(row, conditions) -> bool:
-        if "subject" in conditions:
-            if row[0] != conditions["subject"]:
-                return False
-        if "predicate" in conditions:
-            if row[1] != conditions["predicate"]:
-                return False
-        if "object" in conditions:
-            if row[2] != conditions["object"]:
-                return False
+    def __verify_row(row, query_parameters) -> bool:
+        for index in range(3):
+            if query_parameters[index] is not None:
+                if query_parameters[index].toPython() != row[index]:
+                    return False
         return True
 
     def __getitem__(self, item):
@@ -221,36 +216,40 @@ class PostgresTripleCollection:
             if isinstance(item, slice):
                 s, p, o = item.start, item.stop, item.step
                 # TODO optimize by using stored procedures per combination
-                conditions = {}  # type: Dict[str, str]
                 columns_detail_tuple_per_condition_name = {
                     "subject": (0, s),
                     "predicate": (1, p),
                     "object": (2, o)
                 }
                 remaining_indexes = [0, 1, 2]
+                query_parameters = []
+                conditions_total = 0
                 for condition_name, detail_tuple in columns_detail_tuple_per_condition_name.items():
                     if detail_tuple[1] is not None:
-                        conditions[condition_name] = detail_tuple[1].toPython()
+                        condition = detail_tuple[1].toPython()
                         remaining_indexes.remove(detail_tuple[0])
+                        query_parameters.append(hash(condition))
+                        conditions_total += 1
+                    else:
+                        query_parameters.append(None)
 
                 with connection.cursor("fetch") as cursor:
                     cursor.itersize = 10000
-                    query_parameters = (conditions.get("subject", None), conditions.get("predicate", None), conditions.get("object", None))
                     try:
-                        cursor.execute("SELECT subject, predicate, object FROM gutenberg.cache WHERE COALESCE(%s, subject) = subject AND COALESCE(%s, predicate) = predicate AND COALESCE(%s, object) = object;", query_parameters)
+                        cursor.execute("SELECT subject, predicate, object FROM gutenberg.cache WHERE COALESCE(%s, subject_hash) = subject_hash AND COALESCE(%s, predicate_hash) = predicate_hash AND COALESCE(%s, object_hash) = object_hash;", query_parameters)
                     except psycopg2.errors.UndefinedTable as ex:
                         if 'relation "gutenberg.cache" does not exist' in str(ex):
                             raise InvalidCacheException()
                         raise
                     rows = cursor.fetchall()
-                    if len(conditions.keys()) == 2:
+                    if conditions_total == 2:
                         column_index = remaining_indexes[0]
                         for row in rows:
-                            if PostgresTripleCollection.__verify_row(row, conditions):
+                            if PostgresTripleCollection.__verify_row(row, [s, p, o]):
                                 yield PostgresSingle(row[column_index])
                     else:
                         for row in rows:
-                            if PostgresTripleCollection.__verify_row(row, conditions):
+                            if PostgresTripleCollection.__verify_row(row, [s, p, o]):
                                 yield PostgresTuple(row)
             else:
                 raise TypeError("Expected 3-part slice")
@@ -259,10 +258,13 @@ class PostgresTripleCollection:
 
     def add_fact(self, fact):
         subject, predicate, object = fact
+        subject_hash = hash(subject.toPython())
+        predicate_hash = hash(predicate.toPython())
+        object_hash = hash(object.toPython())
         with self.__populate_connection.cursor() as cursor:
             cursor.execute(
-                "INSERT INTO gutenberg.cache (subject, predicate, object) VALUES (%s, %s, %s)",
-                (subject, predicate, object)
+                "INSERT INTO gutenberg.cache (subject, predicate, object, subject_hash, predicate_hash, object_hash) VALUES (%s, %s, %s, %s, %s, %s)",
+                (subject, predicate, object, subject_hash, predicate_hash, object_hash)
             )
             self.__populate_connection.commit()
 
@@ -318,7 +320,7 @@ class PostgresMetadataCache(MetadataCache):
             # TODO create necessary stored procedures
             with connection.cursor() as cursor:
                 cursor.execute("CREATE SCHEMA IF NOT EXISTS gutenberg;")
-                cursor.execute("CREATE TABLE gutenberg.cache (subject TEXT, predicate TEXT, object TEXT, subject_hash INTEGER, predicate_hash INTEGER, object_hash INTEGER);")
+                cursor.execute("CREATE TABLE gutenberg.cache (subject TEXT, predicate TEXT, object TEXT, subject_hash BIGINT, predicate_hash BIGINT, object_hash BIGINT);")
                 cursor.execute("CREATE INDEX IX_subject ON gutenberg.cache (subject_hash) INCLUDE (subject, predicate, object);")
                 cursor.execute("CREATE INDEX IX_predicate ON gutenberg.cache (predicate_hash) INCLUDE (subject, predicate, object);")
                 cursor.execute("CREATE INDEX IX_object ON gutenberg.cache (object_hash) INCLUDE (subject, predicate, object);")
