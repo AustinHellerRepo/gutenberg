@@ -50,6 +50,8 @@ class _PostgresMetadataCacheForTesting(PostgresMetadataCache):
         PostgresMetadataCache.__init__(self, _PostgresMetadataCacheForTesting.__name__, "postgresql://gutenberg_user:gutenberg_password@localhost:5434/gutenberg_db")
         self.sample_data_factory = sample_data_factory
         self.data_format = data_format
+        if self.exists:
+            self.delete()
 
     def populate(self):
         PostgresMetadataCache.populate(self)

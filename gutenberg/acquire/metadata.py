@@ -13,15 +13,20 @@ import tempfile
 from contextlib import closing
 from contextlib import contextmanager
 from urllib.request import urlopen
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional, Union, TextIO, BinaryIO, IO, List
+import pathlib
+
 
 from rdflib import plugin
-from rdflib.graph import Graph
+from rdflib.graph import Graph, create_input_source
 from rdflib.query import ResultException
-from rdflib.store import Store
+from rdflib.store import Store, VALID_STORE
 from rdflib.term import BNode
 from rdflib.term import URIRef
 from rdflib_sqlalchemy import registerplugins
+from rdflib.parser import InputSource, Parser
+from rdflib.exceptions import ParserError
+from rdflib.paths import Path
 
 from gutenberg._domain_model.exceptions import CacheAlreadyExistsException
 from gutenberg._domain_model.exceptions import InvalidCacheException
@@ -196,11 +201,13 @@ class PostgresTuple:
         return self.__tuple
 
 
-class PostgresTripleCollection:
+class PostgresTripleCollection(Store):
 
     def __init__(self, connection_string: str):
         self.__connection_string = connection_string
-        self.__populate_connection = psycopg2.connect(self.__connection_string)
+        self.__populate_connection = None
+        self.is_closed = True
+        super().__init__(connection_string)
 
     @staticmethod
     def __verify_row(row, query_parameters) -> bool:
@@ -210,54 +217,66 @@ class PostgresTripleCollection:
                     return False
         return True
 
-    def __getitem__(self, item):
+    def triples(self, triple_pattern, context = None):
         connection = psycopg2.connect(self.__connection_string)
         try:
-            if isinstance(item, slice):
-                s, p, o = item.start, item.stop, item.step
-                # TODO optimize by using stored procedures per combination
-                columns_detail_tuple_per_condition_name = {
-                    "subject": (0, s),
-                    "predicate": (1, p),
-                    "object": (2, o)
-                }
-                remaining_indexes = [0, 1, 2]
-                query_parameters = []
-                conditions_total = 0
-                for condition_name, detail_tuple in columns_detail_tuple_per_condition_name.items():
-                    if detail_tuple[1] is not None:
-                        condition = detail_tuple[1].toPython()
-                        remaining_indexes.remove(detail_tuple[0])
-                        query_parameters.append(hash(condition))
-                        conditions_total += 1
-                    else:
-                        query_parameters.append(None)
+            s, p, o = triple_pattern
+            # TODO optimize by using stored procedures per combination
+            columns_detail_tuple_per_condition_name = {
+                "subject": (0, s),
+                "predicate": (1, p),
+                "object": (2, o)
+            }
+            remaining_indexes = [0, 1, 2]
+            query_parameters = []
+            conditions_total = 0
+            for condition_name, detail_tuple in columns_detail_tuple_per_condition_name.items():
+                if detail_tuple[1] is not None:
+                    condition = detail_tuple[1].toPython()
+                    remaining_indexes.remove(detail_tuple[0])
+                    query_parameters.append(hash(condition))
+                    conditions_total += 1
+                else:
+                    query_parameters.append(None)
 
-                with connection.cursor("fetch") as cursor:
-                    cursor.itersize = 10000
-                    try:
-                        cursor.execute("SELECT subject, predicate, object FROM gutenberg.cache WHERE COALESCE(%s, subject_hash) = subject_hash AND COALESCE(%s, predicate_hash) = predicate_hash AND COALESCE(%s, object_hash) = object_hash;", query_parameters)
-                    except psycopg2.errors.UndefinedTable as ex:
-                        if 'relation "gutenberg.cache" does not exist' in str(ex):
-                            raise InvalidCacheException()
-                        raise
-                    rows = cursor.fetchall()
-                    if conditions_total == 2:
-                        column_index = remaining_indexes[0]
-                        for row in rows:
-                            if PostgresTripleCollection.__verify_row(row, [s, p, o]):
-                                yield PostgresSingle(row[column_index])
-                    else:
-                        for row in rows:
-                            if PostgresTripleCollection.__verify_row(row, [s, p, o]):
-                                yield PostgresTuple(row)
-            else:
-                raise TypeError("Expected 3-part slice")
+            with connection.cursor("fetch") as cursor:
+                cursor.itersize = 10000
+                try:
+                    cursor.execute(
+                        "SELECT subject, predicate, object FROM gutenberg.cache WHERE COALESCE(%s, subject_hash) = subject_hash AND COALESCE(%s, predicate_hash) = predicate_hash AND COALESCE(%s, object_hash) = object_hash;",
+                        query_parameters)
+                except psycopg2.errors.UndefinedTable as ex:
+                    if 'relation "gutenberg.cache" does not exist' in str(ex):
+                        raise InvalidCacheException()
+                    raise
+                rows = cursor.fetchall()
+                for row in rows:
+                    yield (PostgresSingle(row[0]), PostgresSingle(row[1]), PostgresSingle(row[2])), None
         finally:
             connection.close()
 
-    def add_fact(self, fact):
-        subject, predicate, object = fact
+    def open(self, configuration: str, create: bool = False) -> Optional[int]:
+        # NOTE: not useable to change or set graph data source
+        if self.__populate_connection is not None:
+            raise Exception("Already opened connection")
+        if not self.is_closed:
+            raise Exception("Must first be closed before opening again")
+        self.__populate_connection = psycopg2.connect(self.__connection_string)
+        self.is_closed = False
+        return VALID_STORE
+
+    def close(self, commit_pending_transaction: bool = False):
+        self.__populate_connection.close()
+        self.__populate_connection = None
+        self.is_closed = True
+
+    def destroy(self, configuration):
+        # TODO consider if anything should be done
+        raise NotImplementedError()
+
+    def add(self, triple, context, quoted: bool = False):
+        # insert the data into the database
+        subject, predicate, object = triple
         subject_hash = hash(subject.toPython())
         predicate_hash = hash(predicate.toPython())
         object_hash = hash(object.toPython())
@@ -268,8 +287,26 @@ class PostgresTripleCollection:
             )
             self.__populate_connection.commit()
 
-    def close(self):
-        self.__populate_connection.close()
+    def remove(self, triple, context = None):
+        # remove the data into the database
+        subject, predicate, object = triple
+        if subject is None or predicate is None or object is None:
+            raise Exception("Need to determine how to react to null triple values.")
+        subject_hash = hash(subject.toPython())
+        predicate_hash = hash(predicate.toPython())
+        object_hash = hash(object.toPython())
+        with self.__populate_connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM gutenberg.cache WHERE subject_hash = %s AND predicate_hash = %s AND object_hash = %s);",
+                (subject_hash, predicate_hash, object_hash)
+            )
+            self.__populate_connection.commit()
+
+    def query(self, query, initNs, initBindings, queryGraph, **kwargs):
+        raise NotImplementedError()
+
+    def update(self, update, initNs, initBindings, queryGraph, **kwargs):
+        raise NotImplementedError()
 
 
 class PostgresMetadataCache(MetadataCache):
@@ -277,7 +314,8 @@ class PostgresMetadataCache(MetadataCache):
     def __init__(self, name: str, connection_string: str = None):
         MetadataCache.__init__(self, None, name)
         self.__connection_string = connection_string or os.getenv('GUTENBERG_POSTGRES_CONNECTIONSTRING')
-        self.__graph = None
+        self.__graph = None  # type: Graph
+        self.is_open = False
 
     @property
     def graph(self):
@@ -295,9 +333,16 @@ class PostgresMetadataCache(MetadataCache):
     def open(self):
         if not self.exists:
             raise InvalidCacheException()
+        if self.__graph is None:
+            self.__graph = Graph(PostgresTripleCollection(self.__connection_string))
+        self.__graph.store.open(None)
+        self.is_open = True
 
     def close(self):
-        pass
+        if self.__graph is None:
+            raise Exception("Must first be opened before closing.")
+        self.__graph.close()
+        self.is_open = False
 
     def delete(self):
         connection = psycopg2.connect(self.__connection_string)
@@ -308,11 +353,13 @@ class PostgresMetadataCache(MetadataCache):
                 connection.commit()
         finally:
             connection.close()
+        if self.is_open:
+            self.close()
 
     # NOTE: populate does not need to be overridden
 
     def _add_to_graph(self, fact):
-        self.__graph.add_fact(fact)
+        self.__graph.store.add(fact, None)
 
     def _populate_setup(self):
         connection = psycopg2.connect(self.__connection_string)
@@ -327,7 +374,7 @@ class PostgresMetadataCache(MetadataCache):
             connection.close()
 
         # set the internal "graph" object to be used externally as if it was an RDF graph
-        self.__graph = PostgresTripleCollection(self.__connection_string)
+        self.__graph = Graph(PostgresTripleCollection(self.__connection_string))
 
     @property
     def _local_storage_path(self):
