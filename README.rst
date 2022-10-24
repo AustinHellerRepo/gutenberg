@@ -6,7 +6,8 @@ Differences from `c-w/gutenberg <https://github.com/c-w/gutenberg>`_
     * This ensures that any naive usage of this framework is free for commercial use
 * Added implementation of PostgresMetadataCache
     * Able to point my cache to a remote server conveniently
-    * **Statistics about usage coming soon**
+    * Running against a local Postgres docker container takes 7.5 hours to populate
+        * Using NVMe drive, i9-9900KF CPU, and 64GB of RAM
 
 *********
 Gutenberg
