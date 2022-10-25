@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from urllib.request import urlopen
 from typing import Dict, Tuple, Optional, Union, TextIO, BinaryIO, IO, List
 import pathlib
+import hashlib
 
 
 from rdflib import plugin
@@ -217,6 +218,10 @@ class PostgresTripleCollection(Store):
                     return False
         return True
 
+    @staticmethod
+    def __hash(value: str) -> int:
+        return int(hashlib.md5(value).hexdigest(), 16)
+
     def triples(self, triple_pattern, context = None):
         connection = psycopg2.connect(self.__connection_string)
         try:
@@ -234,7 +239,8 @@ class PostgresTripleCollection(Store):
                 if detail_tuple[1] is not None:
                     condition = detail_tuple[1].toPython()
                     remaining_indexes.remove(detail_tuple[0])
-                    query_parameters.append(hash(condition))
+                    hashed_condition = PostgresTripleCollection.__hash(condition)
+                    query_parameters.append(hashed_condition)
                     conditions_total += 1
                 else:
                     query_parameters.append(None)
@@ -277,9 +283,9 @@ class PostgresTripleCollection(Store):
     def add(self, triple, context, quoted: bool = False):
         # insert the data into the database
         subject, predicate, object = triple
-        subject_hash = hash(subject.toPython())
-        predicate_hash = hash(predicate.toPython())
-        object_hash = hash(object.toPython())
+        subject_hash = PostgresTripleCollection.__hash(subject.toPython())
+        predicate_hash = PostgresTripleCollection.__hash(predicate.toPython())
+        object_hash = PostgresTripleCollection.__hash(object.toPython())
         with self.__populate_connection.cursor() as cursor:
             cursor.execute(
                 "INSERT INTO gutenberg.cache (subject, predicate, object, subject_hash, predicate_hash, object_hash) VALUES (%s, %s, %s, %s, %s, %s)",
@@ -292,9 +298,9 @@ class PostgresTripleCollection(Store):
         subject, predicate, object = triple
         if subject is None or predicate is None or object is None:
             raise Exception("Need to determine how to react to null triple values.")
-        subject_hash = hash(subject.toPython())
-        predicate_hash = hash(predicate.toPython())
-        object_hash = hash(object.toPython())
+        subject_hash = PostgresTripleCollection.__hash(subject.toPython())
+        predicate_hash = PostgresTripleCollection.__hash(predicate.toPython())
+        object_hash = PostgresTripleCollection.__hash(object.toPython())
         with self.__populate_connection.cursor() as cursor:
             cursor.execute(
                 "DELETE FROM gutenberg.cache WHERE subject_hash = %s AND predicate_hash = %s AND object_hash = %s);",
@@ -333,9 +339,12 @@ class PostgresMetadataCache(MetadataCache):
     def open(self):
         if not self.exists:
             raise InvalidCacheException()
+        # the graph may not be initialized yet, but it is intended for self.__graph to never be None
         if self.__graph is None:
+            # NOTE: passing the connection string automatically opens PostgresTripleCollection
             self.__graph = Graph(PostgresTripleCollection(self.__connection_string))
-        self.__graph.store.open(None)
+        else:
+            self.__graph.open(None)
         self.is_open = True
 
     def close(self):

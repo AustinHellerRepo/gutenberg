@@ -52,6 +52,7 @@ class AuthorExtractor(_SimplePredicateRelationshipExtractor):
 
     @classmethod
     def predicate(cls):
+        # TODO determine if this should be returned: DCTERMS.creator / PGTERMS.name / PGTERMS.alias
         return DCTERMS.creator / PGTERMS.name
 
     @classmethod
