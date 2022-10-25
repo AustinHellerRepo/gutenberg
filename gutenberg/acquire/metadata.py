@@ -220,7 +220,7 @@ class PostgresTripleCollection(Store):
 
     @staticmethod
     def __hash(value: str) -> int:
-        return int(hashlib.md5(value).hexdigest(), 16)
+        return int.from_bytes(hashlib.sha256(str(value).encode()).digest()[:7], 'little')
 
     def triples(self, triple_pattern, context = None):
         connection = psycopg2.connect(self.__connection_string)
